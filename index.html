@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>StaffHub — Staff Management System</title>
+  <meta name="description"
+    content="A complete staff management system for tracking employees, attendance, leave, payroll, shifts, and performance." />
+  <link rel="stylesheet" href="index.css" />
+</head>
+
+<body>
+  <!-- Sidebar -->
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-header">
+      <div class="logo">
+        <span class="logo-icon">⚡</span>
+        <span class="logo-text">StaffHub</span>
+      </div>
+      <button class="sidebar-toggle" id="sidebarToggle" aria-label="Toggle sidebar">☰</button>
+    </div>
+    <nav class="sidebar-nav">
+      <a href="#" class="nav-item active" data-page="dashboard" id="nav-dashboard">
+        <span class="nav-icon">🏠</span><span class="nav-label">Dashboard</span>
+      </a>
+      <a href="#" class="nav-item" data-page="employees" id="nav-employees">
+        <span class="nav-icon">👥</span><span class="nav-label">Employees</span>
+      </a>
+      <a href="#" class="nav-item" data-page="attendance" id="nav-attendance">
+        <span class="nav-icon">📅</span><span class="nav-label">Attendance</span>
+      </a>
+      <a href="#" class="nav-item" data-page="leave" id="nav-leave">
+        <span class="nav-icon">🌴</span><span class="nav-label">Leave</span>
+      </a>
+      <a href="#" class="nav-item" data-page="payroll" id="nav-payroll">
+        <span class="nav-icon">💰</span><span class="nav-label">Payroll</span>
+      </a>
+      <a href="#" class="nav-item" data-page="performance" id="nav-performance">
+        <span class="nav-icon">⭐</span><span class="nav-label">Performance</span>
+      </a>
+    </nav>
+    <div class="sidebar-footer">
+      <div class="sidebar-user">
+        <div class="avatar-sm">A</div>
+        <span class="nav-label">Admin</span>
+      </div>
+    </div>
+  </aside>
+
+  <!-- Main Content -->
+  <main class="main-content" id="mainContent">
+    <!-- Top Bar -->
+    <header class="topbar">
+      <div class="topbar-left">
+        <h1 class="page-title" id="pageTitle">Dashboard</h1>
+      </div>
+      <div class="topbar-right">
+        <span class="topbar-date" id="topbarDate"></span>
+        <button class="btn btn-primary" id="topbarActionBtn" style="display:none"></button>
+      </div>
+    </header>
+
+    <!-- Pages -->
+    <div class="page-content">
+
+      <!-- ===== DASHBOARD ===== -->
+      <section id="page-dashboard" class="page active">
+        <div class="stats-grid">
+          <div class="stat-card stat-blue">
+            <div class="stat-icon">👥</div>
+            <div class="stat-info">
+              <div class="stat-value" id="stat-employees">0</div>
+              <div class="stat-label">Total Employees</div>
+            </div>
+          </div>
+          <div class="stat-card stat-green">
+            <div class="stat-icon">✅</div>
+            <div class="stat-info">
+              <div class="stat-value" id="stat-present">0</div>
+              <div class="stat-label">Present Today</div>
+            </div>
+          </div>
+          <div class="stat-card stat-orange">
+            <div class="stat-icon">🌴</div>
+            <div class="stat-info">
+              <div class="stat-value" id="stat-onleave">0</div>
+              <div class="stat-label">On Leave</div>
+            </div>
+          </div>
+
+        </div>
+        <div class="dashboard-grid">
+          <div class="card">
+            <div class="card-header">
+              <h2 class="card-title">Recent Employees</h2>
+            </div>
+            <div class="card-body">
+              <div id="recentEmployees" class="list-container"></div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-header">
+              <h2 class="card-title">Pending Leave Requests</h2>
+            </div>
+            <div class="card-body">
+              <div id="pendingLeaves" class="list-container"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===== EMPLOYEES ===== -->
+      <section id="page-employees" class="page">
+        <div class="toolbar">
+          <input type="text" class="search-input" id="empSearch" placeholder="🔍 Search employees..." />
+          <button class="btn btn-primary" id="addEmpBtn">+ Add Employee</button>
+        </div>
+        <div class="card">
+          <div class="card-body no-pad">
+            <table class="table" id="empTable">
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Role</th>
+                  <th>Department</th>
+                  <th>Email</th>
+                  <th>Phone</th>
+                  <th>Daily Rate</th>
+                  <th>Joined</th>
+                  <th>Status</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="empTableBody"></tbody>
+            </table>
+            <div class="empty-state" id="empEmpty">
+              <div class="empty-icon">👥</div>
+              <p>No employees yet. Add your first employee!</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===== ATTENDANCE ===== -->
+      <section id="page-attendance" class="page">
+        <div class="toolbar">
+          <input type="date" class="search-input" id="attDate" style="max-width:200px;" />
+          <button class="btn btn-primary" id="markAttBtn">Mark Attendance</button>
+        </div>
+        <div class="card">
+          <div class="card-body no-pad">
+            <table class="table" id="attTable">
+              <thead>
+                <tr>
+                  <th>Employee</th>
+                  <th>Date</th>
+                  <th>Status</th>
+                  <th>Check-In</th>
+                  <th>Check-Out</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="attTableBody"></tbody>
+            </table>
+            <div class="empty-state" id="attEmpty">
+              <div class="empty-icon">📅</div>
+              <p>No attendance records yet.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===== LEAVE ===== -->
+      <section id="page-leave" class="page">
+        <div class="toolbar">
+          <div class="filter-tabs" id="leaveFilter">
+            <button class="filter-tab active" data-filter="all">All</button>
+            <button class="filter-tab" data-filter="pending">Pending</button>
+            <button class="filter-tab" data-filter="approved">Approved</button>
+            <button class="filter-tab" data-filter="rejected">Rejected</button>
+          </div>
+          <button class="btn btn-primary" id="addLeaveBtn">+ Request Leave</button>
+        </div>
+        <div class="card">
+          <div class="card-body no-pad">
+            <table class="table">
+              <thead>
+                <tr>
+                  <th>Employee</th>
+                  <th>Type</th>
+                  <th>From</th>
+                  <th>To</th>
+                  <th>Days</th>
+                  <th>Reason</th>
+                  <th>Status</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="leaveTableBody"></tbody>
+            </table>
+            <div class="empty-state" id="leaveEmpty">
+              <div class="empty-icon">🌴</div>
+              <p>No leave requests yet.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===== PAYROLL ===== -->
+      <section id="page-payroll" class="page">
+        <div class="toolbar">
+          <select class="search-input" id="payrollMonth" style="max-width:200px;"></select>
+          <button class="btn btn-primary" id="addPayrollBtn">+ Add Payroll</button>
+        </div>
+        <div class="card">
+          <div class="card-body no-pad">
+            <table class="table">
+              <thead>
+                <tr>
+                  <th>Employee</th>
+                  <th>Department</th>
+                  <th>Present Days</th>
+                  <th>Earned Salary</th>
+                  <th>Allowances</th>
+                  <th>Deductions</th>
+                  <th>Net Pay</th>
+                  <th>Month</th>
+                  <th>Status</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="payrollTableBody"></tbody>
+            </table>
+            <div class="empty-state" id="payrollEmpty">
+              <div class="empty-icon">💰</div>
+              <p>No payroll records yet.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+
+      <!-- ===== PERFORMANCE ===== -->
+      <section id="page-performance" class="page">
+        <div class="toolbar">
+          <input type="text" class="search-input" id="perfSearch" placeholder="🔍 Search employee..." />
+          <button class="btn btn-primary" id="addPerfBtn">+ Add Review</button>
+        </div>
+        <div class="card">
+          <div class="card-body no-pad">
+            <table class="table">
+              <thead>
+                <tr>
+                  <th>Employee</th>
+                  <th>Reviewer</th>
+                  <th>Period</th>
+                  <th>Rating</th>
+                  <th>Goals</th>
+                  <th>Comments</th>
+                  <th>Date</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="perfTableBody"></tbody>
+            </table>
+            <div class="empty-state" id="perfEmpty">
+              <div class="empty-icon">⭐</div>
+              <p>No performance reviews yet.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+    </div>
+  </main>
+
+  <!-- ===== MODAL ===== -->
+  <div class="modal-overlay" id="modalOverlay">
+    <div class="modal" id="modal">
+      <div class="modal-header">
+        <h2 class="modal-title" id="modalTitle">Modal</h2>
+        <button class="modal-close" id="modalClose">✕</button>
+      </div>
+      <div class="modal-body" id="modalBody"></div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost" id="modalCancel">Cancel</button>
+        <button class="btn btn-primary" id="modalSave">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast -->
+  <div id="toastContainer" class="toast-container"></div>
+
+  <script src="attendance.js"></script>
+</body>
+
+</html>
