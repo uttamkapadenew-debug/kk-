@@ -1,4 +1,4 @@
-/* ===== app.js — StaffHub Complete App Logic ===== */
+﻿/* ===== app.js — StaffHub Complete App Logic ===== */
 
 // ============================================================
 //  DATA STORE — localStorage backed
@@ -20,10 +20,27 @@ const DB = {
 // ============================================================
 //  UTILITY HELPERS
 // ============================================================
-function uid() { return Date.now() + Math.floor(Math.random() * 1000); }
-function today() { return new Date().toISOString().split('T')[0]; }
+function uid() {
+  if (window.crypto?.getRandomValues) {
+    const arr = new Uint32Array(1);
+    window.crypto.getRandomValues(arr);
+    return Date.now() * 1000 + (arr[0] % 1000);
+  }
+  return Date.now() * 1000 + Math.floor(Math.random() * 1000);
+}
+function today() {
+  const d = new Date();
+  const offset = d.getTimezoneOffset() * 60000;
+  return new Date(d.getTime() - offset).toISOString().split('T')[0];
+}
 function fmt(d) { if (!d) return '—'; const dt = new Date(d + 'T00:00:00'); return dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }); }
 function initials(name) { return name ? name.split(' ').map(p => p[0]).join('').toUpperCase().slice(0, 2) : '?'; }
+function escapeHTML(value) {
+  return String(value ?? '').replace(/[&<>"']/g, ch => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[ch]));
+}
+function escapeAttr(value) { return escapeHTML(value); }
 function daysBetween(a, b) {
   const d1 = new Date(a), d2 = new Date(b);
   return Math.max(1, Math.round((d2 - d1) / 86400000) + 1);
@@ -37,7 +54,7 @@ function currency(n) { return '$' + Number(n || 0).toLocaleString('en-US', { min
 function toast(msg, type = 'success') {
   const el = document.createElement('div');
   el.className = 'toast ' + type;
-  el.innerHTML = (type === 'success' ? '✅' : '❌') + ' ' + msg;
+  el.textContent = (type === 'success' ? '✅ ' : '❌ ') + msg;
   document.getElementById('toastContainer').appendChild(el);
   setTimeout(() => el.remove(), 3500);
 }
@@ -45,25 +62,26 @@ function toast(msg, type = 'success') {
 // ============================================================
 //  NAVIGATION / ROUTING
 // ============================================================
-const pages = ['dashboard', 'employees', 'attendance', 'leave', 'payroll', 'shifts', 'performance'];
+const pages = ['dashboard', 'employees', 'attendance', 'leave', 'payroll', 'performance'];
 const pageTitles = {
   dashboard: 'Dashboard', employees: 'Employees',
   attendance: 'Attendance', leave: 'Leave Management',
-  payroll: 'Payroll', shifts: 'Shift Scheduling',
+  payroll: 'Payroll',
   performance: 'Performance Reviews'
 };
 
 let currentPage = 'dashboard';
 
 function navigate(page) {
+  if (!pages.includes(page) || !renders[page]) return;
   currentPage = page;
   // Update nav
   pages.forEach(p => {
-    document.getElementById('nav-' + p).classList.toggle('active', p === page);
+    document.getElementById('nav-' + p)?.classList.toggle('active', p === page);
   });
   // Update sections
   document.querySelectorAll('.page').forEach(s => s.classList.remove('active'));
-  document.getElementById('page-' + page).classList.add('active');
+  document.getElementById('page-' + page)?.classList.add('active');
   // Update title
   document.getElementById('pageTitle').textContent = pageTitles[page];
   // Render page
@@ -88,6 +106,7 @@ document.getElementById('sidebarToggle').addEventListener('click', () => {
 let modalSaveFn = null;
 
 function openModal(title, bodyHTML, saveFn, saveLabel = 'Save') {
+  resetModalSaveButton();
   document.getElementById('modalTitle').textContent = title;
   document.getElementById('modalBody').innerHTML = bodyHTML;
   document.getElementById('modalSave').textContent = saveLabel;
@@ -98,6 +117,14 @@ function openModal(title, bodyHTML, saveFn, saveLabel = 'Save') {
 function closeModal() {
   document.getElementById('modalOverlay').classList.remove('open');
   modalSaveFn = null;
+  resetModalSaveButton();
+}
+
+function resetModalSaveButton() {
+  const save = document.getElementById('modalSave');
+  if (!save) return;
+  save.style.background = '';
+  save.style.boxShadow = '';
 }
 
 document.getElementById('modalClose').addEventListener('click', closeModal);
@@ -110,6 +137,26 @@ document.getElementById('modalSave').addEventListener('click', () => {
   if (modalSaveFn) modalSaveFn();
 });
 
+// Custom confirm dialog (replaces browser confirm() blocked on file://)
+function confirmDialog(message, onConfirm) {
+  const save = document.getElementById('modalSave');
+  const cancel = document.getElementById('modalCancel');
+  document.getElementById('modalTitle').textContent = 'Confirm';
+  document.getElementById('modalBody').innerHTML =
+    `<p style="color:var(--color-text-dim);font-size:15px;padding:8px 0">${message}</p>`;
+  save.textContent = 'Delete';
+  save.style.background = 'var(--color-red)';
+  save.style.boxShadow = 'none';
+  modalSaveFn = () => {
+    closeModal();
+    onConfirm();
+  };
+  // Reset styling on cancel
+  cancel.addEventListener('click', resetModalSaveButton, { once: true });
+  document.getElementById('modalClose').addEventListener('click', resetModalSaveButton, { once: true });
+  document.getElementById('modalOverlay').classList.add('open');
+}
+
 // ============================================================
 //  EMPLOYEES MODULE
 // ============================================================
@@ -119,40 +166,57 @@ const ROLES = ['Manager', 'Senior Developer', 'Developer', 'Designer', 'Analyst'
 function getEmployees() { return DB.get('employees'); }
 function saveEmployees(arr) { DB.set('employees', arr); }
 
+function removeEmployeeRecords(empId) {
+  const sameEmployee = item => String(item.empId) === String(empId);
+  saveAttendance(getAttendance().filter(item => !sameEmployee(item)));
+  saveLeaves(getLeaves().filter(item => !sameEmployee(item)));
+  savePayroll(getPayroll().filter(item => !sameEmployee(item)));
+  savePerformance(getPerformance().filter(item => !sameEmployee(item)));
+}
+
+function cleanupOrphanRecords() {
+  const employeeIds = new Set(getEmployees().map(e => String(e.id)));
+  const belongsToEmployee = item => employeeIds.has(String(item.empId));
+  saveAttendance(getAttendance().filter(belongsToEmployee));
+  saveLeaves(getLeaves().filter(belongsToEmployee));
+  savePayroll(getPayroll().filter(belongsToEmployee));
+  savePerformance(getPerformance().filter(belongsToEmployee));
+}
+
 function employeeForm(emp = {}) {
   return `
   <div class="form-grid">
     <div class="form-group">
       <label>Full Name *</label>
-      <input id="f-name" type="text" value="${emp.name || ''}" placeholder="John Smith" />
+      <input id="f-name" type="text" value="${escapeAttr(emp.name)}" placeholder="John Smith" />
     </div>
     <div class="form-group">
       <label>Role *</label>
       <select id="f-role">
-        ${ROLES.map(r => `<option ${emp.role === r ? 'selected' : ''}>${r}</option>`).join('')}
+        ${ROLES.map(r => `<option ${emp.role === r ? 'selected' : ''}>${escapeHTML(r)}</option>`).join('')}
       </select>
     </div>
     <div class="form-group">
       <label>Department *</label>
       <select id="f-dept">
-        ${DEPTS.map(d => `<option ${emp.department === d ? 'selected' : ''}>${d}</option>`).join('')}
+        ${DEPTS.map(d => `<option ${emp.department === d ? 'selected' : ''}>${escapeHTML(d)}</option>`).join('')}
       </select>
     </div>
     <div class="form-group">
       <label>Email *</label>
-      <input id="f-email" type="email" value="${emp.email || ''}" placeholder="john@company.com" />
+      <input id="f-email" type="email" value="${escapeAttr(emp.email)}" placeholder="john@company.com" />
     </div>
     <div class="form-group">
       <label>Phone</label>
-      <input id="f-phone" type="tel" value="${emp.phone || ''}" placeholder="+1 555 000 0000" />
+      <input id="f-phone" type="tel" value="${escapeAttr(emp.phone)}" placeholder="+1 555 000 0000" />
     </div>
     <div class="form-group">
       <label>Daily Rate ($) *</label>
-      <input id="f-rate" type="number" min="0" step="0.01" value="${emp.dailyRate || ''}" placeholder="250.00" />
+      <input id="f-rate" type="number" min="0" step="0.01" value="${escapeAttr(emp.dailyRate)}" placeholder="250.00" />
     </div>
     <div class="form-group">
       <label>Join Date</label>
-      <input id="f-joined" type="date" value="${emp.joinDate || today()}" />
+      <input id="f-joined" type="date" value="${escapeAttr(emp.joinDate || today())}" />
     </div>
     <div class="form-group">
       <label>Status</label>
@@ -163,7 +227,7 @@ function employeeForm(emp = {}) {
     </div>
     <div class="form-group span-2">
       <label>Address</label>
-      <input id="f-address" type="text" value="${emp.address || ''}" placeholder="123 Main St" />
+      <input id="f-address" type="text" value="${escapeAttr(emp.address)}" placeholder="123 Main St" />
     </div>
   </div>`;
 }
@@ -193,12 +257,12 @@ function renderEmployees() {
   <tr>
     <td><div style="display:flex;align-items:center;gap:10px">
       <div class="avatar" style="width:32px;height:32px;font-size:12px">${initials(e.name)}</div>
-      <strong style="color:var(--color-text)">${e.name}</strong>
+      <strong style="color:var(--color-text)">${escapeHTML(e.name)}</strong>
     </div></td>
-    <td>${e.role}</td>
-    <td>${e.department}</td>
-    <td>${e.email || '—'}</td>
-    <td>${e.phone || '—'}</td>
+    <td>${escapeHTML(e.role)}</td>
+    <td>${escapeHTML(e.department)}</td>
+    <td>${e.email ? escapeHTML(e.email) : '—'}</td>
+    <td>${e.phone ? escapeHTML(e.phone) : '—'}</td>
     <td style="color:var(--color-green);font-weight:600">${e.dailyRate ? currency(e.dailyRate) + '/day' : '—'}</td>
     <td>${fmt(e.joinDate)}</td>
     <td><span class="badge badge-${e.status || 'active'}">${e.status || 'active'}</span></td>
@@ -213,15 +277,17 @@ document.getElementById('addEmpBtn')?.addEventListener('click', () => {
   openModal('Add New Employee', employeeForm(), () => {
     const name = document.getElementById('f-name').value.trim();
     const email = document.getElementById('f-email').value.trim();
+    const dailyRate = document.getElementById('f-rate').value;
     if (!name) { toast('Name is required', 'error'); return; }
     if (!email) { toast('Email is required', 'error'); return; }
+    if (!dailyRate || Number(dailyRate) < 0) { toast('Enter a valid daily rate', 'error'); return; }
     const emps = getEmployees();
     emps.push({
       id: uid(), name,
       role: document.getElementById('f-role').value,
       department: document.getElementById('f-dept').value,
       email, phone: document.getElementById('f-phone').value,
-      dailyRate: document.getElementById('f-rate').value,
+      dailyRate,
       joinDate: document.getElementById('f-joined').value,
       status: document.getElementById('f-status').value,
       address: document.getElementById('f-address').value
@@ -238,13 +304,17 @@ function editEmployee(id) {
   if (!emp) return;
   openModal('Edit Employee', employeeForm(emp), () => {
     const name = document.getElementById('f-name').value.trim();
+    const email = document.getElementById('f-email').value.trim();
+    const dailyRate = document.getElementById('f-rate').value;
     if (!name) { toast('Name is required', 'error'); return; }
+    if (!email) { toast('Email is required', 'error'); return; }
+    if (!dailyRate || Number(dailyRate) < 0) { toast('Enter a valid daily rate', 'error'); return; }
     Object.assign(emp, {
       name, role: document.getElementById('f-role').value,
       department: document.getElementById('f-dept').value,
-      email: document.getElementById('f-email').value,
+      email,
       phone: document.getElementById('f-phone').value,
-      dailyRate: document.getElementById('f-rate').value,
+      dailyRate,
       joinDate: document.getElementById('f-joined').value,
       status: document.getElementById('f-status').value,
       address: document.getElementById('f-address').value
@@ -255,10 +325,11 @@ function editEmployee(id) {
 }
 
 function deleteEmployee(id) {
-  if (!confirm('Delete this employee?')) return;
-  saveEmployees(getEmployees().filter(e => e.id !== id));
-  renderEmployees(); updateDashboard();
-  toast('Employee deleted');
+  confirmDialog('Are you sure you want to delete this employee?', () => {
+    saveEmployees(getEmployees().filter(e => String(e.id) !== String(id)));
+    renderEmployees(); updateDashboard();
+    toast('Employee deleted');
+  });
 }
 
 document.getElementById('empSearch')?.addEventListener('input', renderEmployees);
@@ -277,7 +348,7 @@ function attendanceForm(rec = {}) {
       <label>Employee *</label>
       <select id="a-emp">
         <option value="">— Select —</option>
-        ${emps.map(e => `<option value="${e.id}" ${rec.empId == e.id ? 'selected' : ''}>${e.name} (${e.department})</option>`).join('')}
+        ${emps.map(e => `<option value="${e.id}" ${rec.empId == e.id ? 'selected' : ''}>${escapeHTML(e.name)} (${escapeHTML(e.department)})</option>`).join('')}
       </select>
     </div>
     <div class="form-group">
@@ -306,8 +377,9 @@ function attendanceForm(rec = {}) {
 function renderAttendance() {
   const filterDate = document.getElementById('attDate')?.value || '';
   let records = getAttendance();
-  if (filterDate) records = records.filter(r => r.date === filterDate);
   const emps = getEmployees();
+  records = records.filter(r => emps.some(e => String(e.id) === String(r.empId)));
+  if (filterDate) records = records.filter(r => r.date === filterDate);
 
   const body = document.getElementById('attTableBody');
   const empty = document.getElementById('attEmpty');
@@ -323,7 +395,7 @@ function renderAttendance() {
     return `<tr>
       <td><div style="display:flex;align-items:center;gap:8px">
         <div class="avatar" style="width:28px;height:28px;font-size:11px">${initials(emp?.name || '?')}</div>
-        ${emp?.name || 'Unknown'}
+        ${emp?.name ? escapeHTML(emp.name) : 'Unknown'}
       </div></td>
       <td>${fmt(r.date)}</td>
       <td><span class="badge badge-${r.status}">${r.status}</span></td>
@@ -342,6 +414,7 @@ document.getElementById('markAttBtn')?.addEventListener('click', () => {
     const empId = document.getElementById('a-emp').value;
     const date = document.getElementById('a-date').value;
     if (!empId) { toast('Select an employee', 'error'); return; }
+    if (!date) { toast('Select a date', 'error'); return; }
     const records = getAttendance();
     records.push({
       id: uid(), empId, date,
@@ -361,8 +434,10 @@ function editAttendance(id) {
   openModal('Edit Attendance', attendanceForm(rec), () => {
     const empId = document.getElementById('a-emp').value;
     if (!empId) { toast('Select an employee', 'error'); return; }
+    const date = document.getElementById('a-date').value;
+    if (!date) { toast('Select a date', 'error'); return; }
     Object.assign(rec, {
-      empId, date: document.getElementById('a-date').value,
+      empId, date,
       status: document.getElementById('a-status').value,
       checkIn: document.getElementById('a-in').value,
       checkOut: document.getElementById('a-out').value
@@ -373,10 +448,11 @@ function editAttendance(id) {
 }
 
 function deleteAttendance(id) {
-  if (!confirm('Delete this record?')) return;
-  saveAttendance(getAttendance().filter(r => r.id !== id));
-  renderAttendance(); updateDashboard();
-  toast('Record deleted');
+  confirmDialog('Delete this attendance record?', () => {
+    saveAttendance(getAttendance().filter(r => String(r.id) !== String(id)));
+    renderAttendance(); updateDashboard();
+    toast('Record deleted');
+  });
 }
 
 document.getElementById('attDate')?.addEventListener('change', renderAttendance);
@@ -398,13 +474,13 @@ function leaveForm(lv = {}) {
       <label>Employee *</label>
       <select id="l-emp">
         <option value="">— Select —</option>
-        ${emps.map(e => `<option value="${e.id}" ${lv.empId == e.id ? 'selected' : ''}>${e.name}</option>`).join('')}
+        ${emps.map(e => `<option value="${e.id}" ${lv.empId == e.id ? 'selected' : ''}>${escapeHTML(e.name)}</option>`).join('')}
       </select>
     </div>
     <div class="form-group">
       <label>Leave Type</label>
       <select id="l-type">
-        ${LEAVE_TYPES.map(t => `<option ${lv.type === t ? 'selected' : ''}>${t}</option>`).join('')}
+        ${LEAVE_TYPES.map(t => `<option ${lv.type === t ? 'selected' : ''}>${escapeHTML(t)}</option>`).join('')}
       </select>
     </div>
     <div class="form-group">
@@ -425,7 +501,7 @@ function leaveForm(lv = {}) {
     </div>
     <div class="form-group span-2">
       <label>Reason</label>
-      <textarea id="l-reason" placeholder="Reason for leave...">${lv.reason || ''}</textarea>
+      <textarea id="l-reason" placeholder="Reason for leave...">${escapeHTML(lv.reason)}</textarea>
     </div>
   </div>`;
 }
@@ -433,6 +509,7 @@ function leaveForm(lv = {}) {
 function renderLeave() {
   const emps = getEmployees();
   let leaves = getLeaves();
+  leaves = leaves.filter(l => emps.some(e => String(e.id) === String(l.empId)));
   if (leaveFilterState !== 'all') leaves = leaves.filter(l => l.status === leaveFilterState);
 
   const body = document.getElementById('leaveTableBody');
@@ -446,12 +523,12 @@ function renderLeave() {
     const emp = emps.find(e => e.id == l.empId);
     const days = daysBetween(l.from, l.to);
     return `<tr>
-      <td>${emp?.name || 'Unknown'}</td>
-      <td>${l.type}</td>
+      <td>${emp?.name ? escapeHTML(emp.name) : 'Unknown'}</td>
+      <td>${escapeHTML(l.type)}</td>
       <td>${fmt(l.from)}</td>
       <td>${fmt(l.to)}</td>
       <td style="text-align:center">${days}</td>
-      <td style="max-width:160px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${l.reason || '—'}</td>
+      <td style="max-width:160px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${l.reason ? escapeHTML(l.reason) : '—'}</td>
       <td><span class="badge badge-${l.status}">${l.status}</span></td>
       <td><div class="actions">
         ${l.status === 'pending' ? `
@@ -491,12 +568,16 @@ function editLeave(id) {
   if (!lv) return;
   openModal('Edit Leave Request', leaveForm(lv), () => {
     const empId = document.getElementById('l-emp').value;
+    const from = document.getElementById('l-from').value;
+    const to = document.getElementById('l-to').value;
     if (!empId) { toast('Select an employee', 'error'); return; }
+    if (!from || !to) { toast('Select leave dates', 'error'); return; }
+    if (from > to) { toast('From date must be before To date', 'error'); return; }
     Object.assign(lv, {
       empId, type: document.getElementById('l-type').value,
       status: document.getElementById('l-status').value,
-      from: document.getElementById('l-from').value,
-      to: document.getElementById('l-to').value,
+      from,
+      to,
       reason: document.getElementById('l-reason').value
     });
     saveLeaves(leaves); closeModal(); renderLeave(); updateDashboard();
@@ -506,20 +587,21 @@ function editLeave(id) {
 
 function approveLeave(id) {
   const leaves = getLeaves();
-  const lv = leaves.find(l => l.id === id);
+  const lv = leaves.find(l => String(l.id) === String(id));
   if (lv) { lv.status = 'approved'; saveLeaves(leaves); renderLeave(); updateDashboard(); toast('Leave approved'); }
 }
 
 function rejectLeave(id) {
   const leaves = getLeaves();
-  const lv = leaves.find(l => l.id === id);
+  const lv = leaves.find(l => String(l.id) === String(id));
   if (lv) { lv.status = 'rejected'; saveLeaves(leaves); renderLeave(); updateDashboard(); toast('Leave rejected'); }
 }
 
 function deleteLeave(id) {
-  if (!confirm('Delete this leave request?')) return;
-  saveLeaves(getLeaves().filter(l => l.id !== id));
-  renderLeave(); updateDashboard(); toast('Leave request deleted');
+  confirmDialog('Delete this leave request?', () => {
+    saveLeaves(getLeaves().filter(l => String(l.id) !== String(id)));
+    renderLeave(); updateDashboard(); toast('Leave request deleted');
+  });
 }
 
 document.getElementById('leaveFilter')?.addEventListener('click', e => {
@@ -579,7 +661,7 @@ function payrollForm(p = {}) {
       <label>Employee *</label>
       <select id="p-emp" onchange="refreshPayrollCalc()">
         <option value="">— Select —</option>
-        ${emps.map(e => `<option value="${e.id}" ${p.empId == e.id ? 'selected' : ''}>${e.name} — ${e.department} (Rate: ${e.dailyRate ? currency(e.dailyRate) + '/day' : 'No rate set'})</option>`).join('')}
+        ${emps.map(e => `<option value="${e.id}" ${p.empId == e.id ? 'selected' : ''}>${escapeHTML(e.name)} — ${escapeHTML(e.department)} (Rate: ${e.dailyRate ? currency(e.dailyRate) + '/day' : 'No rate set'})</option>`).join('')}
       </select>
     </div>
     <div class="form-group">
@@ -613,7 +695,7 @@ function payrollForm(p = {}) {
     </div>
     <div class="form-group">
       <label>Notes</label>
-      <input id="p-notes" type="text" value="${p.notes || ''}" placeholder="Optional notes" />
+      <input id="p-notes" type="text" value="${escapeAttr(p.notes)}" placeholder="Optional notes" />
     </div>
   </div>`;
 }
@@ -639,8 +721,9 @@ window.refreshPayrollCalc = function (fillBasic = false) {
 function renderPayroll() {
   const filterMonth = document.getElementById('payrollMonth')?.value || '';
   let records = getPayroll();
-  if (filterMonth) records = records.filter(r => r.month === filterMonth);
   const emps = getEmployees();
+  records = records.filter(r => emps.some(e => String(e.id) === String(r.empId)));
+  if (filterMonth) records = records.filter(r => r.month === filterMonth);
 
   const body = document.getElementById('payrollTableBody');
   const empty = document.getElementById('payrollEmpty');
@@ -656,8 +739,8 @@ function renderPayroll() {
     // Live attendance count for display
     const { presentDays } = calcAttendanceSalary(r.empId, r.month);
     return `<tr>
-      <td><strong style="color:var(--color-text)">${emp?.name || 'Unknown'}</strong></td>
-      <td>${emp?.department || '—'}</td>
+      <td><strong style="color:var(--color-text)">${emp?.name ? escapeHTML(emp.name) : 'Unknown'}</strong></td>
+      <td>${emp?.department ? escapeHTML(emp.department) : '—'}</td>
       <td style="text-align:center">
         <span class="badge badge-present">${presentDays}d</span>
       </td>
@@ -680,12 +763,15 @@ document.getElementById('addPayrollBtn')?.addEventListener('click', () => {
   openModal('Add Payroll Record', payrollForm(), () => {
     const empId = document.getElementById('p-emp').value;
     const basic = document.getElementById('p-basic').value;
+    const month = document.getElementById('p-month').value;
     if (!empId) { toast('Select an employee', 'error'); return; }
+    if (!month) { toast('Select a month', 'error'); return; }
     if (!basic) { toast('Enter basic salary', 'error'); return; }
+    if (Number(basic) < 0) { toast('Enter a valid salary', 'error'); return; }
     const records = getPayroll();
     records.push({
       id: uid(), empId,
-      month: document.getElementById('p-month').value,
+      month,
       status: document.getElementById('p-status').value,
       basic, allowances: document.getElementById('p-allow').value,
       deductions: document.getElementById('p-deduct').value,
@@ -702,11 +788,15 @@ function editPayroll(id) {
   if (!rec) return;
   openModal('Edit Payroll Record', payrollForm(rec), () => {
     const empId = document.getElementById('p-emp').value;
+    const month = document.getElementById('p-month').value;
+    const basic = document.getElementById('p-basic').value;
     if (!empId) { toast('Select an employee', 'error'); return; }
+    if (!month) { toast('Select a month', 'error'); return; }
+    if (!basic || Number(basic) < 0) { toast('Enter a valid salary', 'error'); return; }
     Object.assign(rec, {
-      empId, month: document.getElementById('p-month').value,
+      empId, month,
       status: document.getElementById('p-status').value,
-      basic: document.getElementById('p-basic').value,
+      basic,
       allowances: document.getElementById('p-allow').value,
       deductions: document.getElementById('p-deduct').value,
       notes: document.getElementById('p-notes').value
@@ -718,150 +808,19 @@ function editPayroll(id) {
 
 function markPaid(id) {
   const records = getPayroll();
-  const rec = records.find(r => r.id === id);
+  const rec = records.find(r => String(r.id) === String(id));
   if (rec) { rec.status = 'paid'; savePayroll(records); renderPayroll(); toast('Marked as paid'); }
 }
 
 function deletePayroll(id) {
-  if (!confirm('Delete payroll record?')) return;
-  savePayroll(getPayroll().filter(r => r.id !== id));
-  renderPayroll(); toast('Record deleted');
+  confirmDialog('Delete this payroll record?', () => {
+    savePayroll(getPayroll().filter(r => String(r.id) !== String(id)));
+    renderPayroll(); toast('Record deleted');
+  });
 }
 
 document.getElementById('payrollMonth')?.addEventListener('change', renderPayroll);
 
-// ============================================================
-//  SHIFTS MODULE
-// ============================================================
-function getShifts() { return DB.get('shifts'); }
-function saveShifts(arr) { DB.set('shifts', arr); }
-
-const SHIFT_TYPES = [
-  { name: 'Morning', start: '06:00', end: '14:00' },
-  { name: 'Afternoon', start: '14:00', end: '22:00' },
-  { name: 'Night', start: '22:00', end: '06:00' },
-  { name: 'Day', start: '09:00', end: '17:00' },
-  { name: 'Custom', start: '', end: '' }
-];
-
-function shiftForm(s = {}) {
-  const emps = getEmployees();
-  return `
-  <div class="form-grid">
-    <div class="form-group span-2">
-      <label>Employee *</label>
-      <select id="s-emp">
-        <option value="">— Select —</option>
-        ${emps.map(e => `<option value="${e.id}" ${s.empId == e.id ? 'selected' : ''}>${e.name}</option>`).join('')}
-      </select>
-    </div>
-    <div class="form-group">
-      <label>Date *</label>
-      <input id="s-date" type="date" value="${s.date || today()}" />
-    </div>
-    <div class="form-group">
-      <label>Shift Type</label>
-      <select id="s-type" onchange="applyShiftType(this.value)">
-        ${SHIFT_TYPES.map(t => `<option value="${t.name}" ${s.shiftType === t.name ? 'selected' : ''}>${t.name}</option>`).join('')}
-      </select>
-    </div>
-    <div class="form-group">
-      <label>Start Time</label>
-      <input id="s-start" type="time" value="${s.start || '09:00'}" />
-    </div>
-    <div class="form-group">
-      <label>End Time</label>
-      <input id="s-end" type="time" value="${s.end || '17:00'}" />
-    </div>
-    <div class="form-group span-2">
-      <label>Location / Notes</label>
-      <input id="s-loc" type="text" value="${s.location || ''}" placeholder="Office, Remote, Site A..." />
-    </div>
-  </div>`;
-}
-
-window.applyShiftType = function (type) {
-  const found = SHIFT_TYPES.find(t => t.name === type);
-  if (found && found.start) {
-    document.getElementById('s-start').value = found.start;
-    document.getElementById('s-end').value = found.end;
-  }
-};
-
-function renderShifts() {
-  const filterDate = document.getElementById('shiftDate')?.value || '';
-  let shifts = getShifts();
-  if (filterDate) shifts = shifts.filter(s => s.date === filterDate);
-  const emps = getEmployees();
-
-  const body = document.getElementById('shiftTableBody');
-  const empty = document.getElementById('shiftEmpty');
-  if (!body) return;
-
-  if (!shifts.length) { body.innerHTML = ''; empty.style.display = 'flex'; return; }
-  empty.style.display = 'none';
-
-  body.innerHTML = shifts.map(s => {
-    const emp = emps.find(e => e.id == s.empId);
-    return `<tr>
-      <td>${emp?.name || 'Unknown'}</td>
-      <td>${fmt(s.date)}</td>
-      <td><span class="badge badge-pending">${s.shiftType}</span></td>
-      <td>${s.start || '—'}</td>
-      <td>${s.end || '—'}</td>
-      <td>${s.location || '—'}</td>
-      <td><div class="actions">
-        <button class="btn btn-sm btn-ghost" onclick="editShift(${s.id})">✏️</button>
-        <button class="btn btn-sm btn-danger" onclick="deleteShift(${s.id})">🗑️</button>
-      </div></td>
-    </tr>`;
-  }).join('');
-}
-
-document.getElementById('addShiftBtn')?.addEventListener('click', () => {
-  openModal('Assign Shift', shiftForm(), () => {
-    const empId = document.getElementById('s-emp').value;
-    if (!empId) { toast('Select an employee', 'error'); return; }
-    const shifts = getShifts();
-    shifts.push({
-      id: uid(), empId,
-      date: document.getElementById('s-date').value,
-      shiftType: document.getElementById('s-type').value,
-      start: document.getElementById('s-start').value,
-      end: document.getElementById('s-end').value,
-      location: document.getElementById('s-loc').value
-    });
-    saveShifts(shifts); closeModal(); renderShifts(); updateDashboard();
-    toast('Shift assigned');
-  });
-});
-
-function editShift(id) {
-  const shifts = getShifts();
-  const s = shifts.find(sh => sh.id === id);
-  if (!s) return;
-  openModal('Edit Shift', shiftForm(s), () => {
-    const empId = document.getElementById('s-emp').value;
-    if (!empId) { toast('Select an employee', 'error'); return; }
-    Object.assign(s, {
-      empId, date: document.getElementById('s-date').value,
-      shiftType: document.getElementById('s-type').value,
-      start: document.getElementById('s-start').value,
-      end: document.getElementById('s-end').value,
-      location: document.getElementById('s-loc').value
-    });
-    saveShifts(shifts); closeModal(); renderShifts();
-    toast('Shift updated');
-  });
-}
-
-function deleteShift(id) {
-  if (!confirm('Delete this shift?')) return;
-  saveShifts(getShifts().filter(s => s.id !== id));
-  renderShifts(); updateDashboard(); toast('Shift deleted');
-}
-
-document.getElementById('shiftDate')?.addEventListener('change', renderShifts);
 
 // ============================================================
 //  PERFORMANCE MODULE
@@ -878,12 +837,12 @@ function perfForm(p = {}) {
       <label>Employee *</label>
       <select id="pr-emp">
         <option value="">— Select —</option>
-        ${emps.map(e => `<option value="${e.id}" ${p.empId == e.id ? 'selected' : ''}>${e.name}</option>`).join('')}
+        ${emps.map(e => `<option value="${e.id}" ${p.empId == e.id ? 'selected' : ''}>${escapeHTML(e.name)}</option>`).join('')}
       </select>
     </div>
     <div class="form-group">
       <label>Reviewer Name</label>
-      <input id="pr-reviewer" type="text" value="${p.reviewer || ''}" placeholder="Manager name" />
+      <input id="pr-reviewer" type="text" value="${escapeAttr(p.reviewer)}" placeholder="Manager name" />
     </div>
     <div class="form-group">
       <label>Period</label>
@@ -903,11 +862,11 @@ function perfForm(p = {}) {
     </div>
     <div class="form-group span-2">
       <label>Goals Achieved</label>
-      <textarea id="pr-goals" placeholder="List of goals achieved...">${p.goals || ''}</textarea>
+      <textarea id="pr-goals" placeholder="List of goals achieved...">${escapeHTML(p.goals)}</textarea>
     </div>
     <div class="form-group span-2">
       <label>Comments / Feedback</label>
-      <textarea id="pr-comments" placeholder="Performance comments...">${p.comments || ''}</textarea>
+      <textarea id="pr-comments" placeholder="Performance comments...">${escapeHTML(p.comments)}</textarea>
     </div>
   </div>`;
 }
@@ -916,6 +875,7 @@ function renderPerformance() {
   const q = document.getElementById('perfSearch')?.value?.toLowerCase() || '';
   const emps = getEmployees();
   let records = getPerformance();
+  records = records.filter(r => emps.some(e => String(e.id) === String(r.empId)));
   if (q) {
     records = records.filter(r => {
       const emp = emps.find(e => e.id == r.empId);
@@ -933,12 +893,12 @@ function renderPerformance() {
   body.innerHTML = records.map(r => {
     const emp = emps.find(e => e.id == r.empId);
     return `<tr>
-      <td><strong style="color:var(--color-text)">${emp?.name || 'Unknown'}</strong></td>
-      <td>${r.reviewer || '—'}</td>
-      <td>${r.period}</td>
+      <td><strong style="color:var(--color-text)">${emp?.name ? escapeHTML(emp.name) : 'Unknown'}</strong></td>
+      <td>${r.reviewer ? escapeHTML(r.reviewer) : '—'}</td>
+      <td>${escapeHTML(r.period)}</td>
       <td>${stars(r.rating)}</td>
-      <td style="max-width:140px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${r.goals || '—'}</td>
-      <td style="max-width:160px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${r.comments || '—'}</td>
+      <td style="max-width:140px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${r.goals ? escapeHTML(r.goals) : '—'}</td>
+      <td style="max-width:160px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${r.comments ? escapeHTML(r.comments) : '—'}</td>
       <td>${fmt(r.date)}</td>
       <td><div class="actions">
         <button class="btn btn-sm btn-ghost" onclick="editPerf(${r.id})">✏️</button>
@@ -988,9 +948,10 @@ function editPerf(id) {
 }
 
 function deletePerf(id) {
-  if (!confirm('Delete this review?')) return;
-  savePerformance(getPerformance().filter(r => r.id !== id));
-  renderPerformance(); toast('Review deleted');
+  confirmDialog('Delete this performance review?', () => {
+    savePerformance(getPerformance().filter(r => String(r.id) !== String(id)));
+    renderPerformance(); toast('Review deleted');
+  });
 }
 
 document.getElementById('perfSearch')?.addEventListener('input', renderPerformance);
@@ -1000,9 +961,9 @@ document.getElementById('perfSearch')?.addEventListener('input', renderPerforman
 // ============================================================
 function updateDashboard() {
   const emps = getEmployees();
-  const attendance = getAttendance();
-  const leaves = getLeaves();
-  const shifts = getShifts();
+  const employeeIds = new Set(emps.map(e => String(e.id)));
+  const attendance = getAttendance().filter(a => employeeIds.has(String(a.empId)));
+  const leaves = getLeaves().filter(l => employeeIds.has(String(l.empId)));
   const todayStr = today();
 
   // Stats
@@ -1014,9 +975,6 @@ function updateDashboard() {
   const onLeave = leaves.filter(l => l.status === 'approved' && l.from <= todayStr && l.to >= todayStr).length;
   document.getElementById('stat-onleave').textContent = onLeave;
 
-  const shiftsToday = shifts.filter(s => s.date === todayStr).length;
-  document.getElementById('stat-shifts').textContent = shiftsToday;
-
   // Recent employees
   const recentEmps = [...emps].sort((a, b) => b.id - a.id).slice(0, 5);
   const recentEl = document.getElementById('recentEmployees');
@@ -1025,8 +983,8 @@ function updateDashboard() {
       <div class="list-item">
         <div class="avatar">${initials(e.name)}</div>
         <div class="list-info">
-          <div class="list-name">${e.name}</div>
-          <div class="list-sub">${e.role} · ${e.department}</div>
+          <div class="list-name">${escapeHTML(e.name)}</div>
+          <div class="list-sub">${escapeHTML(e.role)} · ${escapeHTML(e.department)}</div>
         </div>
         <span class="badge badge-${e.status || 'active'}">${e.status || 'active'}</span>
       </div>`).join('') : '<div class="empty-state" style="padding:30px"><div class="empty-icon">👥</div><p>No employees</p></div>';
@@ -1041,8 +999,8 @@ function updateDashboard() {
       return `<div class="list-item">
         <div class="avatar">${initials(emp?.name || '?')}</div>
         <div class="list-info">
-          <div class="list-name">${emp?.name || 'Unknown'}</div>
-          <div class="list-sub">${l.type} · ${fmt(l.from)} – ${fmt(l.to)}</div>
+          <div class="list-name">${emp?.name ? escapeHTML(emp.name) : 'Unknown'}</div>
+          <div class="list-sub">${escapeHTML(l.type)} · ${fmt(l.from)} – ${fmt(l.to)}</div>
         </div>
         <div style="display:flex;gap:6px">
           <button class="btn btn-sm btn-success" onclick="approveLeave(${l.id});navigate('dashboard')">✓</button>
@@ -1062,7 +1020,6 @@ const renders = {
   attendance: renderAttendance,
   leave: renderLeave,
   payroll: renderPayroll,
-  shifts: renderShifts,
   performance: renderPerformance
 };
 
@@ -1077,10 +1034,6 @@ function init() {
   // Set attendance date default
   const attD = document.getElementById('attDate');
   if (attD) attD.value = today();
-
-  // Set shift date default
-  const shiftD = document.getElementById('shiftDate');
-  if (shiftD) shiftD.value = today();
 
   // Populate payroll months
   populatePayrollMonths();
@@ -1127,11 +1080,7 @@ function seedDemoData() {
     { id: uid(), empId: 1003, month: thisMonth, basic: 6000, allowances: 500, deductions: 200, status: 'unpaid', notes: '' },
   ]);
 
-  saveShifts([
-    { id: uid(), empId: 1001, date: t, shiftType: 'Day', start: '09:00', end: '17:00', location: 'Office' },
-    { id: uid(), empId: 1002, date: t, shiftType: 'Morning', start: '06:00', end: '14:00', location: 'Remote' },
-    { id: uid(), empId: 1003, date: t, shiftType: 'Afternoon', start: '14:00', end: '22:00', location: 'Office' },
-  ]);
+
 
   savePerformance([
     { id: uid(), empId: 1001, reviewer: 'Director Brown', period: 'Q4 2025', rating: 5, date: '2026-01-15', goals: 'Led 3 major features', comments: 'Excellent leadership and delivery.' },
@@ -1144,3 +1093,5 @@ function seedDemoData() {
 //  START
 // ============================================================
 window.addEventListener('DOMContentLoaded', init);
+
+
