@@ -3,6 +3,8 @@
 // ============================================================
 //  DATA STORE — localStorage backed
 // ============================================================
+const APP_INIT_KEY = 'staffhub_initialized';
+
 const DB = {
   get(key) {
     try { return JSON.parse(localStorage.getItem('staffhub_' + key)) || []; }
@@ -16,6 +18,18 @@ const DB = {
     return items.length ? Math.max(...items.map(i => i.id)) + 1 : 1;
   }
 };
+function hasAppInitialized() {
+  return localStorage.getItem(APP_INIT_KEY) === 'true';
+}
+
+function markAppInitialized() {
+  localStorage.setItem(APP_INIT_KEY, 'true');
+}
+
+function appHasStoredData() {
+  return ['employees', 'attendance', 'leaves', 'payroll', 'performance']
+    .some(key => DB.get(key).length > 0);
+}
 
 // ============================================================
 //  UTILITY HELPERS
@@ -1038,8 +1052,10 @@ function init() {
   // Populate payroll months
   populatePayrollMonths();
 
-  // Seed demo data if empty
-  if (!getEmployees().length) seedDemoData();
+  // Seed demo data only for a brand-new app profile.
+  if (!hasAppInitialized() && !appHasStoredData()) seedDemoData();
+  markAppInitialized();
+  cleanupOrphanRecords();
 
   // Render dashboard
   navigate('dashboard');
@@ -1093,5 +1109,4 @@ function seedDemoData() {
 //  START
 // ============================================================
 window.addEventListener('DOMContentLoaded', init);
-
 
