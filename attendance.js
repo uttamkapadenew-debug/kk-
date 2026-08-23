@@ -678,13 +678,39 @@ function shiftEmployeeAttendanceMonth(id, direction) {
   renderEmployeeAttendanceCalendar(id, monthKey(new Date(year, month - 1 + direction, 1)));
 }
 
-function viewEmployeeAttendance(id) {
+function viewEmployeeAttendance(id, selectedMonth = monthKey()) {
   const emp = getEmployees().find(employee => String(employee.id) === String(id));
   if (!emp) { toast('Employee not found', 'error'); return; }
-  openModal(`${emp.name} — Attendance Calendar`, employeeAttendanceCalendar(emp, monthKey()), closeModal, 'Close');
+  openModal(`${emp.name} — Attendance Calendar`, employeeAttendanceCalendar(emp, selectedMonth), closeModal, 'Close');
   document.getElementById('modal').classList.add('attendance-calendar-modal');
   document.getElementById('modalCancel').style.display = 'none';
 }
+
+function openDashboardAttendanceCalendar() {
+  const emps = getEmployees();
+  if (!emps.length) { toast('Add an employee before opening the calendar', 'error'); return; }
+  const picker = `
+    <div class="form-grid">
+      <div class="form-group span-2">
+        <label>Staff Member *</label>
+        <select id="dashboard-calendar-employee">
+          ${emps.map(emp => `<option value="${emp.id}">${escapeHTML(emp.name)} — ${escapeHTML(emp.department)}</option>`).join('')}
+        </select>
+      </div>
+      <div class="form-group span-2">
+        <label>Month *</label>
+        <input id="dashboard-calendar-month" type="month" value="${monthKey()}" />
+      </div>
+    </div>`;
+  openModal('Staff Attendance Calendar', picker, () => {
+    const empId = document.getElementById('dashboard-calendar-employee').value;
+    const selectedMonth = document.getElementById('dashboard-calendar-month').value;
+    if (!empId || !selectedMonth) { toast('Select a staff member and month', 'error'); return; }
+    viewEmployeeAttendance(empId, selectedMonth);
+  }, 'Open Calendar');
+}
+
+document.getElementById('dashboardCalendarBtn')?.addEventListener('click', openDashboardAttendanceCalendar);
 
 // ============================================================
 //  LEAVE MODULE
