@@ -686,6 +686,7 @@ function viewEmployeeAttendance(id, selectedMonth = monthKey()) {
   document.getElementById('modalCancel').style.display = 'none';
 }
 
+// PERMANENT USER-PROTECTED DASHBOARD ACTION: preserve this picker and its button binding.
 function openDashboardAttendanceCalendar() {
   const emps = getEmployees();
   if (!emps.length) { toast('Add an employee before opening the calendar', 'error'); return; }
