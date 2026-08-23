@@ -1,14 +1,15 @@
-﻿/* ===== app.js — StaffHub Complete App Logic ===== */
+/* ===== app.js — StaffHub Complete App Logic ===== */
 
 // ============================================================
 //  DATA STORE — localStorage backed
 // ============================================================
-const APP_INIT_KEY = 'staffhub_initialized';
-
 const DB = {
   get(key) {
     try { return JSON.parse(localStorage.getItem('staffhub_' + key)) || []; }
     catch { return []; }
+  },
+  has(key) {
+    return localStorage.getItem('staffhub_' + key) !== null;
   },
   set(key, val) {
     localStorage.setItem('staffhub_' + key, JSON.stringify(val));
@@ -18,18 +19,6 @@ const DB = {
     return items.length ? Math.max(...items.map(i => i.id)) + 1 : 1;
   }
 };
-function hasAppInitialized() {
-  return localStorage.getItem(APP_INIT_KEY) === 'true';
-}
-
-function markAppInitialized() {
-  localStorage.setItem(APP_INIT_KEY, 'true');
-}
-
-function appHasStoredData() {
-  return ['employees', 'attendance', 'leaves', 'payroll', 'performance']
-    .some(key => DB.get(key).length > 0);
-}
 
 // ============================================================
 //  UTILITY HELPERS
@@ -42,12 +31,23 @@ function uid() {
   }
   return Date.now() * 1000 + Math.floor(Math.random() * 1000);
 }
+const USER_LOCALE = navigator.language || 'en-US';
+
 function today() {
   const d = new Date();
   const offset = d.getTimezoneOffset() * 60000;
   return new Date(d.getTime() - offset).toISOString().split('T')[0];
 }
-function fmt(d) { if (!d) return '—'; const dt = new Date(d + 'T00:00:00'); return dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }); }
+function monthKey(date = new Date()) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+}
+function fmt(d) { if (!d) return '—'; const dt = new Date(d + 'T00:00:00'); return dt.toLocaleDateString(USER_LOCALE, { month: 'short', day: 'numeric', year: 'numeric' }); }
+function fmtMonth(month) {
+  const match = /^(\d{4})-(\d{2})$/.exec(month || '');
+  if (!match) return '—';
+  return new Date(Number(match[1]), Number(match[2]) - 1, 1)
+    .toLocaleDateString(USER_LOCALE, { month: 'long', year: 'numeric' });
+}
 function initials(name) { return name ? name.split(' ').map(p => p[0]).join('').toUpperCase().slice(0, 2) : '?'; }
 function escapeHTML(value) {
   return String(value ?? '').replace(/[&<>"']/g, ch => ({
@@ -63,7 +63,22 @@ function stars(r) {
   const n = parseInt(r) || 0;
   return '<span class="stars">' + '★'.repeat(n) + '☆'.repeat(5 - n) + '</span>';
 }
-function currency(n) { return '$' + Number(n || 0).toLocaleString('en-US', { minimumFractionDigits: 2 }); }
+function currency(n) {
+  return Number(n || 0).toLocaleString(USER_LOCALE, {
+    style: 'currency', currency: 'USD', minimumFractionDigits: 2
+  });
+}
+
+function getPreferences() {
+  try {
+    const preferences = JSON.parse(localStorage.getItem('staffhub_preferences'));
+    return preferences && typeof preferences === 'object' && !Array.isArray(preferences) ? preferences : {};
+  } catch { return {}; }
+}
+
+function setPreference(key, value) {
+  localStorage.setItem('staffhub_preferences', JSON.stringify({ ...getPreferences(), [key]: value }));
+}
 
 function toast(msg, type = 'success') {
   const el = document.createElement('div');
@@ -89,6 +104,7 @@ let currentPage = 'dashboard';
 function navigate(page) {
   if (!pages.includes(page) || !renders[page]) return;
   currentPage = page;
+  setPreference('currentPage', page);
   // Update nav
   pages.forEach(p => {
     document.getElementById('nav-' + p)?.classList.toggle('active', p === page);
@@ -102,16 +118,48 @@ function navigate(page) {
   renders[page]();
 }
 
+const sidebar = document.getElementById('sidebar');
+const sidebarBackdrop = document.getElementById('sidebarBackdrop');
+const mobileMenuToggle = document.getElementById('mobileMenuToggle');
+const mobileLayoutQuery = window.matchMedia('(max-width: 800px)');
+
+function setMobileSidebar(open) {
+  const shouldOpen = Boolean(open) && mobileLayoutQuery.matches;
+  sidebar.classList.toggle('mobile-open', shouldOpen);
+  sidebarBackdrop.classList.toggle('open', shouldOpen);
+  document.body.classList.toggle('mobile-menu-open', shouldOpen);
+  mobileMenuToggle.setAttribute('aria-expanded', String(shouldOpen));
+}
+
 document.querySelectorAll('.nav-item').forEach(item => {
   item.addEventListener('click', e => {
     e.preventDefault();
     navigate(item.dataset.page);
+    setMobileSidebar(false);
   });
 });
 
-// Sidebar toggle
 document.getElementById('sidebarToggle').addEventListener('click', () => {
-  document.getElementById('sidebar').classList.toggle('collapsed');
+  if (mobileLayoutQuery.matches) {
+    setMobileSidebar(!sidebar.classList.contains('mobile-open'));
+  } else {
+    sidebar.classList.toggle('collapsed');
+    setPreference('sidebarCollapsed', sidebar.classList.contains('collapsed'));
+  }
+});
+
+mobileMenuToggle.addEventListener('click', () => {
+  setMobileSidebar(!sidebar.classList.contains('mobile-open'));
+});
+
+sidebarBackdrop.addEventListener('click', () => setMobileSidebar(false));
+
+window.addEventListener('resize', () => {
+  if (!mobileLayoutQuery.matches) setMobileSidebar(false);
+});
+
+document.addEventListener('keydown', event => {
+  if (event.key === 'Escape') setMobileSidebar(false);
 });
 
 // ============================================================
@@ -121,6 +169,8 @@ let modalSaveFn = null;
 
 function openModal(title, bodyHTML, saveFn, saveLabel = 'Save') {
   resetModalSaveButton();
+  document.getElementById('modal').classList.remove('attendance-calendar-modal');
+  document.getElementById('modalCancel').style.display = '';
   document.getElementById('modalTitle').textContent = title;
   document.getElementById('modalBody').innerHTML = bodyHTML;
   document.getElementById('modalSave').textContent = saveLabel;
@@ -180,24 +230,32 @@ const ROLES = ['Manager', 'Senior Developer', 'Developer', 'Designer', 'Analyst'
 function getEmployees() { return DB.get('employees'); }
 function saveEmployees(arr) { DB.set('employees', arr); }
 
+function hasEmployeeEmail(employees, email, excludeId = null) {
+  const normalizedEmail = email.trim().toLowerCase();
+  return employees.some(employee =>
+    String(employee.id) !== String(excludeId) &&
+    String(employee.email || '').trim().toLowerCase() === normalizedEmail
+  );
+}
+
 function removeEmployeeRecords(empId) {
-  const sameEmployee = item => String(item.empId) === String(empId);
-  saveAttendance(getAttendance().filter(item => !sameEmployee(item)));
-  saveLeaves(getLeaves().filter(item => !sameEmployee(item)));
-  savePayroll(getPayroll().filter(item => !sameEmployee(item)));
-  savePerformance(getPerformance().filter(item => !sameEmployee(item)));
+  ['attendance', 'leaves', 'payroll', 'performance'].forEach(key => {
+    DB.set(key, DB.get(key).filter(record => String(record.empId) !== String(empId)));
+  });
 }
 
 function cleanupOrphanRecords() {
-  const employeeIds = new Set(getEmployees().map(e => String(e.id)));
-  const belongsToEmployee = item => employeeIds.has(String(item.empId));
-  saveAttendance(getAttendance().filter(belongsToEmployee));
-  saveLeaves(getLeaves().filter(belongsToEmployee));
-  savePayroll(getPayroll().filter(belongsToEmployee));
-  savePerformance(getPerformance().filter(belongsToEmployee));
+  const employeeIds = new Set(getEmployees().map(employee => String(employee.id)));
+  ['attendance', 'leaves', 'payroll', 'performance'].forEach(key => {
+    const records = DB.get(key);
+    const cleaned = records.filter(record => employeeIds.has(String(record.empId)));
+    if (cleaned.length !== records.length) DB.set(key, cleaned);
+  });
 }
 
 function employeeForm(emp = {}) {
+  const roleOptions = emp.role && !ROLES.includes(emp.role) ? [emp.role, ...ROLES] : ROLES;
+  const departmentOptions = emp.department && !DEPTS.includes(emp.department) ? [emp.department, ...DEPTS] : DEPTS;
   return `
   <div class="form-grid">
     <div class="form-group">
@@ -207,13 +265,13 @@ function employeeForm(emp = {}) {
     <div class="form-group">
       <label>Role *</label>
       <select id="f-role">
-        ${ROLES.map(r => `<option ${emp.role === r ? 'selected' : ''}>${escapeHTML(r)}</option>`).join('')}
+        ${roleOptions.map(r => `<option ${emp.role === r ? 'selected' : ''}>${escapeHTML(r)}</option>`).join('')}
       </select>
     </div>
     <div class="form-group">
       <label>Department *</label>
       <select id="f-dept">
-        ${DEPTS.map(d => `<option ${emp.department === d ? 'selected' : ''}>${escapeHTML(d)}</option>`).join('')}
+        ${departmentOptions.map(d => `<option ${emp.department === d ? 'selected' : ''}>${escapeHTML(d)}</option>`).join('')}
       </select>
     </div>
     <div class="form-group">
@@ -281,6 +339,7 @@ function renderEmployees() {
     <td>${fmt(e.joinDate)}</td>
     <td><span class="badge badge-${e.status || 'active'}">${e.status || 'active'}</span></td>
     <td><div class="actions">
+      <button class="btn btn-sm btn-primary" onclick="viewEmployeeAttendance(${e.id})">📅 Calendar</button>
       <button class="btn btn-sm btn-ghost" onclick="editEmployee(${e.id})">✏️ Edit</button>
       <button class="btn btn-sm btn-danger" onclick="deleteEmployee(${e.id})">🗑️</button>
     </div></td>
@@ -294,8 +353,9 @@ document.getElementById('addEmpBtn')?.addEventListener('click', () => {
     const dailyRate = document.getElementById('f-rate').value;
     if (!name) { toast('Name is required', 'error'); return; }
     if (!email) { toast('Email is required', 'error'); return; }
-    if (!dailyRate || Number(dailyRate) < 0) { toast('Enter a valid daily rate', 'error'); return; }
     const emps = getEmployees();
+    if (hasEmployeeEmail(emps, email)) { toast('An employee with this email already exists', 'error'); return; }
+    if (!dailyRate || Number(dailyRate) <= 0) { toast('Enter a valid daily rate', 'error'); return; }
     emps.push({
       id: uid(), name,
       role: document.getElementById('f-role').value,
@@ -322,7 +382,8 @@ function editEmployee(id) {
     const dailyRate = document.getElementById('f-rate').value;
     if (!name) { toast('Name is required', 'error'); return; }
     if (!email) { toast('Email is required', 'error'); return; }
-    if (!dailyRate || Number(dailyRate) < 0) { toast('Enter a valid daily rate', 'error'); return; }
+    if (hasEmployeeEmail(emps, email, id)) { toast('An employee with this email already exists', 'error'); return; }
+    if (!dailyRate || Number(dailyRate) <= 0) { toast('Enter a valid daily rate', 'error'); return; }
     Object.assign(emp, {
       name, role: document.getElementById('f-role').value,
       department: document.getElementById('f-dept').value,
@@ -339,8 +400,9 @@ function editEmployee(id) {
 }
 
 function deleteEmployee(id) {
-  confirmDialog('Are you sure you want to delete this employee?', () => {
+  confirmDialog('Delete this employee and all related attendance, leave, payroll, and performance records?', () => {
     saveEmployees(getEmployees().filter(e => String(e.id) !== String(id)));
+    removeEmployeeRecords(id);
     renderEmployees(); updateDashboard();
     toast('Employee deleted');
   });
@@ -351,11 +413,49 @@ document.getElementById('empSearch')?.addEventListener('input', renderEmployees)
 // ============================================================
 //  ATTENDANCE MODULE
 // ============================================================
-function getAttendance() { return DB.get('attendance'); }
-function saveAttendance(arr) { DB.set('attendance', arr); }
+function attendanceKey(empId, date) {
+  return `${String(empId)}|${date}`;
+}
+
+function normalizeAttendanceRecords(records) {
+  const deduped = [];
+  const seen = new Map();
+  records.forEach(record => {
+    if (!record?.empId || !record?.date) {
+      deduped.push(record);
+      return;
+    }
+    const key = attendanceKey(record.empId, record.date);
+    if (seen.has(key)) {
+      deduped[seen.get(key)] = record;
+    } else {
+      seen.set(key, deduped.length);
+      deduped.push(record);
+    }
+  });
+  return deduped;
+}
+
+function getAttendance() { return normalizeAttendanceRecords(DB.get('attendance')); }
+function saveAttendance(arr) { DB.set('attendance', normalizeAttendanceRecords(arr)); }
+
+function findAttendanceRecord(records, empId, date, excludeId = null) {
+  return records.find(r =>
+    String(r.empId) === String(empId) &&
+    r.date === date &&
+    (excludeId === null || String(r.id) !== String(excludeId))
+  );
+}
+
+function setAttendanceFilterDate(date) {
+  const filter = document.getElementById('attDate');
+  if (filter) filter.value = date;
+}
 
 function attendanceForm(rec = {}) {
   const emps = getEmployees();
+  const selectedDate = rec.date || document.getElementById('attDate')?.value || today();
+  const isAbsent = rec.status === 'absent';
   return `
   <div class="form-grid">
     <div class="form-group span-2">
@@ -367,11 +467,11 @@ function attendanceForm(rec = {}) {
     </div>
     <div class="form-group">
       <label>Date *</label>
-      <input id="a-date" type="date" value="${rec.date || today()}" />
+      <input id="a-date" type="date" value="${selectedDate}" />
     </div>
     <div class="form-group">
       <label>Status</label>
-      <select id="a-status">
+      <select id="a-status" onchange="syncAttendanceTimeFields()">
         <option value="present" ${rec.status === 'present' ? 'selected' : ''}>Present</option>
         <option value="absent" ${rec.status === 'absent' ? 'selected' : ''}>Absent</option>
         <option value="late" ${rec.status === 'late' ? 'selected' : ''}>Late</option>
@@ -379,21 +479,36 @@ function attendanceForm(rec = {}) {
     </div>
     <div class="form-group">
       <label>Check-In</label>
-      <input id="a-in" type="time" value="${rec.checkIn || '09:00'}" />
+      <input id="a-in" type="time" value="${isAbsent ? '' : (rec.checkIn || '09:00')}" ${isAbsent ? 'disabled' : ''} />
     </div>
     <div class="form-group">
       <label>Check-Out</label>
-      <input id="a-out" type="time" value="${rec.checkOut || '17:00'}" />
+      <input id="a-out" type="time" value="${isAbsent ? '' : (rec.checkOut || '17:00')}" ${isAbsent ? 'disabled' : ''} />
     </div>
   </div>`;
 }
 
+window.syncAttendanceTimeFields = function () {
+  const isAbsent = document.getElementById('a-status')?.value === 'absent';
+  const checkIn = document.getElementById('a-in');
+  const checkOut = document.getElementById('a-out');
+  if (!checkIn || !checkOut) return;
+  checkIn.disabled = isAbsent;
+  checkOut.disabled = isAbsent;
+  if (isAbsent) {
+    checkIn.value = '';
+    checkOut.value = '';
+  } else {
+    if (!checkIn.value) checkIn.value = '09:00';
+    if (!checkOut.value) checkOut.value = '17:00';
+  }
+};
+
 function renderAttendance() {
   const filterDate = document.getElementById('attDate')?.value || '';
   let records = getAttendance();
-  const emps = getEmployees();
-  records = records.filter(r => emps.some(e => String(e.id) === String(r.empId)));
   if (filterDate) records = records.filter(r => r.date === filterDate);
+  const emps = getEmployees();
 
   const body = document.getElementById('attTableBody');
   const empty = document.getElementById('attEmpty');
@@ -430,14 +545,21 @@ document.getElementById('markAttBtn')?.addEventListener('click', () => {
     if (!empId) { toast('Select an employee', 'error'); return; }
     if (!date) { toast('Select a date', 'error'); return; }
     const records = getAttendance();
-    records.push({
-      id: uid(), empId, date,
-      status: document.getElementById('a-status').value,
-      checkIn: document.getElementById('a-in').value,
-      checkOut: document.getElementById('a-out').value
-    });
-    saveAttendance(records); closeModal(); renderAttendance(); updateDashboard();
-    toast('Attendance marked');
+    const status = document.getElementById('a-status').value;
+    const values = {
+      empId, date,
+      status,
+      checkIn: status === 'absent' ? '' : document.getElementById('a-in').value,
+      checkOut: status === 'absent' ? '' : document.getElementById('a-out').value
+    };
+    const existing = findAttendanceRecord(records, empId, date);
+    if (existing) {
+      Object.assign(existing, values);
+    } else {
+      records.push({ id: uid(), ...values });
+    }
+    saveAttendance(records); closeModal(); setAttendanceFilterDate(date); renderAttendance(); updateDashboard();
+    toast(existing ? 'Attendance updated for this date' : 'Attendance marked');
   });
 });
 
@@ -450,13 +572,19 @@ function editAttendance(id) {
     if (!empId) { toast('Select an employee', 'error'); return; }
     const date = document.getElementById('a-date').value;
     if (!date) { toast('Select a date', 'error'); return; }
+    const duplicate = findAttendanceRecord(records, empId, date, id);
+    if (duplicate) {
+      toast('Attendance already exists for this employee on this date', 'error');
+      return;
+    }
+    const status = document.getElementById('a-status').value;
     Object.assign(rec, {
       empId, date,
-      status: document.getElementById('a-status').value,
-      checkIn: document.getElementById('a-in').value,
-      checkOut: document.getElementById('a-out').value
+      status,
+      checkIn: status === 'absent' ? '' : document.getElementById('a-in').value,
+      checkOut: status === 'absent' ? '' : document.getElementById('a-out').value
     });
-    saveAttendance(records); closeModal(); renderAttendance();
+    saveAttendance(records); closeModal(); setAttendanceFilterDate(date); renderAttendance(); updateDashboard();
     toast('Attendance updated');
   });
 }
@@ -470,6 +598,93 @@ function deleteAttendance(id) {
 }
 
 document.getElementById('attDate')?.addEventListener('change', renderAttendance);
+
+// ============================================================
+//  EMPLOYEE ATTENDANCE CALENDAR
+// ============================================================
+function employeeAttendanceCalendar(emp, selectedMonth) {
+  const safeMonth = /^\d{4}-\d{2}$/.test(selectedMonth || '') ? selectedMonth : monthKey();
+  const [year, month] = safeMonth.split('-').map(Number);
+  const firstDay = new Date(year, month - 1, 1);
+  const daysInMonth = new Date(year, month, 0).getDate();
+  const leadingBlanks = (firstDay.getDay() + 6) % 7;
+  const records = getAttendance().filter(record =>
+    String(record.empId) === String(emp.id) && record.date?.startsWith(safeMonth)
+  );
+  const recordsByDate = new Map(records.map(record => [record.date, record]));
+  const totals = records.reduce((result, record) => {
+    const status = ['present', 'absent', 'late'].includes(record.status) ? record.status : 'unrecorded';
+    result[status]++;
+    return result;
+  }, { present: 0, absent: 0, late: 0, unrecorded: 0 });
+
+  const dayCells = Array.from({ length: leadingBlanks }, () => '<div class="attendance-calendar-day is-empty" aria-hidden="true"></div>');
+  for (let day = 1; day <= daysInMonth; day++) {
+    const date = `${safeMonth}-${String(day).padStart(2, '0')}`;
+    const record = recordsByDate.get(date);
+    const status = ['present', 'absent', 'late'].includes(record?.status) ? record.status : 'unrecorded';
+    const detail = record
+      ? `${status.charAt(0).toUpperCase() + status.slice(1)}${record.checkIn ? ` · ${record.checkIn}` : ''}${record.checkOut ? `–${record.checkOut}` : ''}`
+      : 'No attendance record';
+    dayCells.push(`
+      <div class="attendance-calendar-day is-${status}" title="${escapeAttr(detail)}">
+        <span class="attendance-day-number">${day}</span>
+        <span class="attendance-day-status">${status === 'unrecorded' ? 'No record' : status}</span>
+      </div>`);
+  }
+
+  return `
+    <div class="attendance-calendar-profile">
+      <div class="avatar">${initials(emp.name)}</div>
+      <div>
+        <strong>${escapeHTML(emp.name)}</strong>
+        <div class="list-sub">${escapeHTML(emp.role)} · ${escapeHTML(emp.department)}</div>
+      </div>
+    </div>
+    <div class="attendance-calendar-controls">
+      <button type="button" class="btn btn-sm btn-ghost" onclick="shiftEmployeeAttendanceMonth(${emp.id}, -1)" aria-label="Previous month">← Previous</button>
+      <input id="employeeAttendanceMonth" class="search-input" type="month" value="${safeMonth}"
+        onchange="renderEmployeeAttendanceCalendar(${emp.id}, this.value)" aria-label="Attendance month" />
+      <button type="button" class="btn btn-sm btn-ghost" onclick="shiftEmployeeAttendanceMonth(${emp.id}, 1)" aria-label="Next month">Next →</button>
+    </div>
+    <div class="attendance-calendar-summary">
+      <span class="attendance-summary-item is-present"><strong>${totals.present}</strong> Present</span>
+      <span class="attendance-summary-item is-absent"><strong>${totals.absent}</strong> Absent</span>
+      <span class="attendance-summary-item is-late"><strong>${totals.late}</strong> Late</span>
+      <span class="attendance-summary-item is-unrecorded"><strong>${daysInMonth - records.length}</strong> No record</span>
+    </div>
+    <div class="attendance-calendar-weekdays" aria-hidden="true">
+      ${['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map(day => `<span>${day}</span>`).join('')}
+    </div>
+    <div class="attendance-calendar-grid">${dayCells.join('')}</div>
+    <div class="attendance-calendar-legend">
+      <span><i class="legend-dot is-present"></i>Present</span>
+      <span><i class="legend-dot is-absent"></i>Absent</span>
+      <span><i class="legend-dot is-late"></i>Late</span>
+      <span><i class="legend-dot is-unrecorded"></i>No record</span>
+    </div>`;
+}
+
+function renderEmployeeAttendanceCalendar(id, selectedMonth) {
+  const emp = getEmployees().find(employee => String(employee.id) === String(id));
+  const body = document.getElementById('modalBody');
+  if (!emp || !body) return;
+  body.innerHTML = employeeAttendanceCalendar(emp, selectedMonth);
+}
+
+function shiftEmployeeAttendanceMonth(id, direction) {
+  const selectedMonth = document.getElementById('employeeAttendanceMonth')?.value || monthKey();
+  const [year, month] = selectedMonth.split('-').map(Number);
+  renderEmployeeAttendanceCalendar(id, monthKey(new Date(year, month - 1 + direction, 1)));
+}
+
+function viewEmployeeAttendance(id) {
+  const emp = getEmployees().find(employee => String(employee.id) === String(id));
+  if (!emp) { toast('Employee not found', 'error'); return; }
+  openModal(`${emp.name} — Attendance Calendar`, employeeAttendanceCalendar(emp, monthKey()), closeModal, 'Close');
+  document.getElementById('modal').classList.add('attendance-calendar-modal');
+  document.getElementById('modalCancel').style.display = 'none';
+}
 
 // ============================================================
 //  LEAVE MODULE
@@ -523,7 +738,6 @@ function leaveForm(lv = {}) {
 function renderLeave() {
   const emps = getEmployees();
   let leaves = getLeaves();
-  leaves = leaves.filter(l => emps.some(e => String(e.id) === String(l.empId)));
   if (leaveFilterState !== 'all') leaves = leaves.filter(l => l.status === leaveFilterState);
 
   const body = document.getElementById('leaveTableBody');
@@ -562,6 +776,7 @@ document.getElementById('addLeaveBtn')?.addEventListener('click', () => {
     const from = document.getElementById('l-from').value;
     const to = document.getElementById('l-to').value;
     if (!empId) { toast('Select an employee', 'error'); return; }
+    if (!from || !to) { toast('Select leave dates', 'error'); return; }
     if (from > to) { toast('From date must be before To date', 'error'); return; }
     const leaves = getLeaves();
     leaves.push({
@@ -633,15 +848,24 @@ document.getElementById('leaveFilter')?.addEventListener('click', e => {
 function getPayroll() { return DB.get('payroll'); }
 function savePayroll(arr) { DB.set('payroll', arr); }
 
+function hasPayrollRecord(records, empId, month, excludeId = null) {
+  return records.some(record =>
+    String(record.empId) === String(empId) &&
+    record.month === month &&
+    String(record.id) !== String(excludeId)
+  );
+}
+
 // Count present+late days for an employee in a given YYYY-MM month
 function calcAttendanceSalary(empId, month) {
   if (!empId || !month) return { presentDays: 0, calculatedBasic: 0 };
   const records = getAttendance();
-  const presentDays = records.filter(r =>
+  const presentDates = new Set(records.filter(r =>
     String(r.empId) === String(empId) &&
     r.date && r.date.startsWith(month) &&
     (r.status === 'present' || r.status === 'late')
-  ).length;
+  ).map(r => r.date));
+  const presentDays = presentDates.size;
   const emps = getEmployees();
   const emp = emps.find(e => String(e.id) === String(empId));
   const dailyRate = parseFloat(emp?.dailyRate || 0);
@@ -656,8 +880,8 @@ function populatePayrollMonths() {
   const opts = [];
   for (let i = 0; i < 12; i++) {
     const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
-    const val = d.toISOString().slice(0, 7);
-    const label = d.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+    const val = monthKey(d);
+    const label = d.toLocaleDateString(USER_LOCALE, { month: 'long', year: 'numeric' });
     opts.push(`<option value="${val}">${label}</option>`);
   }
   sel.innerHTML = '<option value="">All Months</option>' + opts.join('');
@@ -666,7 +890,7 @@ function populatePayrollMonths() {
 function payrollForm(p = {}) {
   const emps = getEmployees();
   const now = new Date();
-  const defMonth = now.toISOString().slice(0, 7);
+  const defMonth = monthKey(now);
   // Pre-calc if editing existing record
   const preCalc = p.empId ? calcAttendanceSalary(p.empId, p.month || defMonth) : { presentDays: 0, calculatedBasic: 0, dailyRate: 0 };
   return `
@@ -735,9 +959,8 @@ window.refreshPayrollCalc = function (fillBasic = false) {
 function renderPayroll() {
   const filterMonth = document.getElementById('payrollMonth')?.value || '';
   let records = getPayroll();
-  const emps = getEmployees();
-  records = records.filter(r => emps.some(e => String(e.id) === String(r.empId)));
   if (filterMonth) records = records.filter(r => r.month === filterMonth);
+  const emps = getEmployees();
 
   const body = document.getElementById('payrollTableBody');
   const empty = document.getElementById('payrollEmpty');
@@ -749,7 +972,7 @@ function renderPayroll() {
   body.innerHTML = records.map(r => {
     const emp = emps.find(e => e.id == r.empId);
     const net = (Number(r.basic) || 0) + (Number(r.allowances) || 0) - (Number(r.deductions) || 0);
-    const monthLabel = r.month ? new Date(r.month + '-01').toLocaleDateString('en-US', { month: 'long', year: 'numeric' }) : '—';
+    const monthLabel = fmtMonth(r.month);
     // Live attendance count for display
     const { presentDays } = calcAttendanceSalary(r.empId, r.month);
     return `<tr>
@@ -783,6 +1006,7 @@ document.getElementById('addPayrollBtn')?.addEventListener('click', () => {
     if (!basic) { toast('Enter basic salary', 'error'); return; }
     if (Number(basic) < 0) { toast('Enter a valid salary', 'error'); return; }
     const records = getPayroll();
+    if (hasPayrollRecord(records, empId, month)) { toast('Payroll already exists for this employee and month', 'error'); return; }
     records.push({
       id: uid(), empId,
       month,
@@ -807,6 +1031,7 @@ function editPayroll(id) {
     if (!empId) { toast('Select an employee', 'error'); return; }
     if (!month) { toast('Select a month', 'error'); return; }
     if (!basic || Number(basic) < 0) { toast('Enter a valid salary', 'error'); return; }
+    if (hasPayrollRecord(records, empId, month, id)) { toast('Payroll already exists for this employee and month', 'error'); return; }
     Object.assign(rec, {
       empId, month,
       status: document.getElementById('p-status').value,
@@ -889,7 +1114,6 @@ function renderPerformance() {
   const q = document.getElementById('perfSearch')?.value?.toLowerCase() || '';
   const emps = getEmployees();
   let records = getPerformance();
-  records = records.filter(r => emps.some(e => String(e.id) === String(r.empId)));
   if (q) {
     records = records.filter(r => {
       const emp = emps.find(e => e.id == r.empId);
@@ -975,15 +1199,16 @@ document.getElementById('perfSearch')?.addEventListener('input', renderPerforman
 // ============================================================
 function updateDashboard() {
   const emps = getEmployees();
-  const employeeIds = new Set(emps.map(e => String(e.id)));
-  const attendance = getAttendance().filter(a => employeeIds.has(String(a.empId)));
-  const leaves = getLeaves().filter(l => employeeIds.has(String(l.empId)));
+  const attendance = getAttendance();
+  const leaves = getLeaves();
   const todayStr = today();
 
   // Stats
   document.getElementById('stat-employees').textContent = emps.length;
 
-  const presentToday = attendance.filter(a => a.date === todayStr && a.status === 'present').length;
+  const presentToday = attendance.filter(a =>
+    a.date === todayStr && (a.status === 'present' || a.status === 'late')
+  ).length;
   document.getElementById('stat-present').textContent = presentToday;
 
   const onLeave = leaves.filter(l => l.status === 'approved' && l.from <= todayStr && l.to >= todayStr).length;
@@ -1000,28 +1225,30 @@ function updateDashboard() {
           <div class="list-name">${escapeHTML(e.name)}</div>
           <div class="list-sub">${escapeHTML(e.role)} · ${escapeHTML(e.department)}</div>
         </div>
+        <button class="btn btn-sm btn-ghost" onclick="viewEmployeeAttendance(${e.id})">📅 Calendar</button>
         <span class="badge badge-${e.status || 'active'}">${e.status || 'active'}</span>
       </div>`).join('') : '<div class="empty-state" style="padding:30px"><div class="empty-icon">👥</div><p>No employees</p></div>';
   }
 
-  // Pending leaves
-  const pending = leaves.filter(l => l.status === 'pending').slice(0, 5);
-  const pendingEl = document.getElementById('pendingLeaves');
-  if (pendingEl) {
-    pendingEl.innerHTML = pending.length ? pending.map(l => {
-      const emp = emps.find(e => e.id == l.empId);
+  // Today's attendance — compact dashboard preview (maximum four staff).
+  const todayRecords = attendance.filter(record => record.date === todayStr).slice(0, 4);
+  const todayAttendanceEl = document.getElementById('todayAttendanceList');
+  if (todayAttendanceEl) {
+    todayAttendanceEl.innerHTML = todayRecords.length ? todayRecords.map(record => {
+      const emp = emps.find(employee => String(employee.id) === String(record.empId));
+      const status = ['present', 'absent', 'late'].includes(record.status) ? record.status : 'absent';
+      const time = status === 'absent'
+        ? 'No check-in'
+        : `${record.checkIn || '—'} – ${record.checkOut || '—'}`;
       return `<div class="list-item">
         <div class="avatar">${initials(emp?.name || '?')}</div>
         <div class="list-info">
           <div class="list-name">${emp?.name ? escapeHTML(emp.name) : 'Unknown'}</div>
-          <div class="list-sub">${escapeHTML(l.type)} · ${fmt(l.from)} – ${fmt(l.to)}</div>
+          <div class="list-sub">${escapeHTML(time)}</div>
         </div>
-        <div style="display:flex;gap:6px">
-          <button class="btn btn-sm btn-success" onclick="approveLeave(${l.id});navigate('dashboard')">✓</button>
-          <button class="btn btn-sm btn-danger" onclick="rejectLeave(${l.id});navigate('dashboard')">✕</button>
-        </div>
+        <span class="badge badge-${status}">${status}</span>
       </div>`;
-    }).join('') : '<div class="empty-state" style="padding:30px"><div class="empty-icon">✅</div><p>No pending requests</p></div>';
+    }).join('') : '<div class="empty-state" style="padding:30px"><div class="empty-icon">📅</div><p>No attendance marked today</p></div>';
   }
 }
 
@@ -1043,7 +1270,11 @@ const renders = {
 function init() {
   // Date in topbar
   const now = new Date();
-  document.getElementById('topbarDate').textContent = now.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
+  document.getElementById('topbarDate').textContent = now.toLocaleDateString(USER_LOCALE, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
+
+  // Restore non-destructive UI choices without overriding mobile navigation.
+  const preferences = getPreferences();
+  if (!mobileLayoutQuery.matches && preferences.sidebarCollapsed) sidebar.classList.add('collapsed');
 
   // Set attendance date default
   const attD = document.getElementById('attDate');
@@ -1052,13 +1283,16 @@ function init() {
   // Populate payroll months
   populatePayrollMonths();
 
-  // Seed demo data only for a brand-new app profile.
-  if (!hasAppInitialized() && !appHasStoredData()) seedDemoData();
-  markAppInitialized();
+  // Seed demo data once. An intentionally emptied employee list must stay empty.
+  const hasAppInitialized = localStorage.getItem('staffhub_initialized') === 'true';
+  if (!hasAppInitialized && !DB.has('employees')) seedDemoData();
+  localStorage.setItem('staffhub_initialized', 'true');
+
+  // Remove stale child records left behind by older versions.
   cleanupOrphanRecords();
 
   // Render dashboard
-  navigate('dashboard');
+  navigate(pages.includes(preferences.currentPage) ? preferences.currentPage : 'dashboard');
 }
 
 // ============================================================
@@ -1089,7 +1323,7 @@ function seedDemoData() {
     { id: uid(), empId: 1003, type: 'Casual', from: '2026-03-10', to: '2026-03-10', reason: 'Personal work', status: 'pending' },
   ]);
 
-  const thisMonth = new Date().toISOString().slice(0, 7);
+  const thisMonth = monthKey();
   savePayroll([
     { id: uid(), empId: 1001, month: thisMonth, basic: 9000, allowances: 800, deductions: 300, status: 'unpaid', notes: '' },
     { id: uid(), empId: 1002, month: thisMonth, basic: 7500, allowances: 600, deductions: 250, status: 'paid', notes: '' },
@@ -1109,4 +1343,3 @@ function seedDemoData() {
 //  START
 // ============================================================
 window.addEventListener('DOMContentLoaded', init);
-
