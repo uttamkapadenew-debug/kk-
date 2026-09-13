@@ -1,43 +1,29 @@
-/* ===== app.js — StaffHub Complete App Logic ===== */
+/* ===== attendance.js — StaffHub Complete App Logic ===== */
 
 // ============================================================
 //  DATA STORE — localStorage backed
 // ============================================================
-const APP_INIT_KEY = 'staffhub_initialized';
-const AUTH_USERNAME = 'admin';
-const AUTH_PASSWORD = 'admin123';
-const AUTH_SESSION_KEY = 'staffhub_auth_session';
-const STORAGE_PERMISSION_KEY = 'staffhub_storage_allowed';
+let currentAccount = null;
 let storagePermissionGranted = false;
+let accountStore = null;
+let pendingAuthMessage = '';
 
 if (document.body) document.body.classList.add('auth-locked');
 
 const DB = {
   get(key) {
-    try { return JSON.parse(localStorage.getItem('staffhub_' + key)) || []; }
-    catch { return []; }
+    if (!currentAccount || !storagePermissionGranted) return [];
+    return accountStore.get(key);
   },
   set(key, val) {
-    localStorage.setItem('staffhub_' + key, JSON.stringify(val));
+    if (!currentAccount || !storagePermissionGranted) throw new Error('Sign in and allow storage before saving records.');
+    accountStore.set(key, val);
   },
   nextId(key) {
     const items = this.get(key);
     return items.length ? Math.max(...items.map(i => i.id)) + 1 : 1;
   }
 };
-function hasAppInitialized() {
-  return storagePermissionGranted && localStorage.getItem(APP_INIT_KEY) === 'true';
-}
-
-function markAppInitialized() {
-  if (storagePermissionGranted) localStorage.setItem(APP_INIT_KEY, 'true');
-}
-
-function appHasStoredData() {
-  return ['employees', 'attendance', 'payroll', 'performance']
-    .some(key => DB.get(key).length > 0);
-}
-
 // ============================================================
 //  UTILITY HELPERS
 // ============================================================
@@ -1027,27 +1013,6 @@ const renders = {
 };
 
 
-function hasRememberedSession() {
-  // Accounts and permission must be requested every time the app opens.
-  // Keep this helper for compatibility with older saved sessions, but never bypass the gate.
-  return false;
-}
-
-function clearRememberedSession() {
-  try {
-    localStorage.removeItem(AUTH_SESSION_KEY);
-    localStorage.removeItem(STORAGE_PERMISSION_KEY);
-  } catch {
-    // If storage is blocked, the normal permission step will explain it.
-  }
-}
-
-function rememberSession() {
-  // Record permission only for the current browser profile data flow.
-  // Authentication is intentionally not remembered.
-  localStorage.setItem(STORAGE_PERMISSION_KEY, 'true');
-}
-
 // ============================================================
 //  AUTH / STORAGE PERMISSION
 // ============================================================
@@ -1062,11 +1027,12 @@ function getAuthOverlay() {
   return overlay;
 }
 
-function showAuthGate() {
+function showAuthGate(message = '') {
   document.body.classList.add('auth-locked');
   storagePermissionGranted = false;
-  clearRememberedSession();
-  renderLoginStep();
+  currentAccount = null;
+  accountStore = null;
+  renderLoginStep(message);
 }
 
 function renderLoginStep(error = '') {
@@ -1074,29 +1040,48 @@ function renderLoginStep(error = '') {
   overlay.innerHTML = `
     <div class="auth-card">
       <div class="auth-icon">⚡</div>
-      <h1>StaffHub Account</h1>
-      <p class="auth-subtitle">Enter your account details to continue. StaffHub will ask again every time the app opens.</p>
-      <form id="loginForm" class="auth-form">
-        <label>Account username</label>
-        <input id="loginUser" type="text" autocomplete="username" placeholder="admin" required />
-        <label>Account password</label>
-        <input id="loginPass" type="password" autocomplete="current-password" placeholder="admin123" required />
-        ${error ? `<div class="auth-error">${error}</div>` : ''}
-        <button type="submit" class="btn btn-primary auth-submit">Login</button>
-      </form>
-      <div class="auth-hint">Default login: admin / admin123</div>
+      <h1>Sign in to StaffHub</h1>
+      <p class="auth-subtitle">Use the authorized Google account to access staff records on this device.</p>
+      ${error ? `<div class="auth-error">${escapeHTML(error)}</div>` : ''}
+      <button type="button" class="btn google-signin-btn" id="googleSignInBtn">
+        <span class="google-mark">G</span> Continue with Google
+      </button>
+      <div class="auth-hint">StaffHub asks you to sign in each time the page opens.</div>
     </div>`;
 
-  document.getElementById('loginForm').addEventListener('submit', e => {
-    e.preventDefault();
-    const username = document.getElementById('loginUser').value.trim();
-    const password = document.getElementById('loginPass').value;
-    if (username === AUTH_USERNAME && password === AUTH_PASSWORD) {
-      renderStoragePermissionStep();
-      return;
+  document.getElementById('googleSignInBtn').addEventListener('click', async event => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    button.textContent = 'Opening Google…';
+    try {
+      await window.StaffHubAuth.signIn();
+    } catch (signInError) {
+      const message = signInError?.code === 'auth/popup-closed-by-user'
+        ? 'Google sign-in was closed before it finished.'
+        : 'Google sign-in could not be completed. Please try again.';
+      renderLoginStep(message);
     }
-    renderLoginStep('Invalid username or password.');
   });
+}
+
+function isAuthorizedAccount(user) {
+  const access = window.STAFFHUB_ACCESS || {};
+  const email = String(user?.email || '').toLowerCase();
+  const allowedEmails = (access.allowedEmails || []).map(value => String(value).toLowerCase());
+  return Boolean(user?.emailVerified && (access.allowAllGoogleAccounts || allowedEmails.includes(email)));
+}
+
+function renderAccountSummary() {
+  const photo = currentAccount.photoURL
+    ? `<img src="${escapeAttr(currentAccount.photoURL)}" alt="" referrerpolicy="no-referrer" />`
+    : `<div class="avatar-sm">${escapeHTML(initials(currentAccount.displayName || currentAccount.email))}</div>`;
+  return `<div class="auth-account">
+    ${photo}
+    <div>
+      <strong>${escapeHTML(currentAccount.displayName || 'Google account')}</strong>
+      <div class="auth-account-email">${escapeHTML(currentAccount.email)}</div>
+    </div>
+  </div>`;
 }
 
 function renderStoragePermissionStep(error = '') {
@@ -1105,9 +1090,14 @@ function renderStoragePermissionStep(error = '') {
     <div class="auth-card">
       <div class="auth-icon">💾</div>
       <h1>Storage Permission</h1>
+      ${renderAccountSummary()}
       <p class="auth-subtitle">Allow StaffHub to save employees, attendance, payroll, and performance records in this browser.</p>
       <p class="auth-subtitle">If you do not allow permission, the app will stay locked and no records will load.</p>
       ${error ? `<div class="auth-error">${error}</div>` : ''}
+      ${accountStore.hasLegacyData() ? `<label class="legacy-import">
+        <input type="checkbox" id="importLegacyRecords" checked />
+        Copy existing StaffHub records into this Google account. The old copy will remain as a backup.
+      </label>` : ''}
       <div class="auth-actions">
         <button type="button" class="btn btn-primary" id="allowStorageBtn">Allow Permission</button>
         <button type="button" class="btn btn-ghost" id="denyStorageBtn">Deny</button>
@@ -1119,7 +1109,14 @@ function renderStoragePermissionStep(error = '') {
       renderStoragePermissionStep('Browser storage is unavailable or blocked.');
       return;
     }
-    rememberSession();
+    if (document.getElementById('importLegacyRecords')?.checked) {
+      try {
+        accountStore.importLegacy();
+      } catch (importError) {
+        renderStoragePermissionStep(importError.message);
+        return;
+      }
+    }
     unlockApp();
   });
 
@@ -1137,12 +1134,12 @@ function renderStorageDeniedStep() {
       <p class="auth-subtitle">Storage permission is required before StaffHub can load or save records.</p>
       <div class="auth-actions">
         <button type="button" class="btn btn-primary" id="retryStorageBtn">Choose Again</button>
-        <button type="button" class="btn btn-ghost" id="backLoginBtn">Back to Login</button>
+        <button type="button" class="btn btn-ghost" id="backLoginBtn">Sign out</button>
       </div>
     </div>`;
 
   document.getElementById('retryStorageBtn').addEventListener('click', renderStoragePermissionStep);
-  document.getElementById('backLoginBtn').addEventListener('click', () => renderLoginStep());
+  document.getElementById('backLoginBtn').addEventListener('click', () => window.StaffHubAuth.signOut());
 }
 
 function enableStoragePermission() {
@@ -1160,6 +1157,7 @@ function enableStoragePermission() {
 function unlockApp() {
   document.getElementById('authOverlay')?.remove();
   document.body.classList.remove('auth-locked');
+  document.getElementById('accountName').textContent = currentAccount.displayName || currentAccount.email;
   init();
 }
 
@@ -1178,9 +1176,6 @@ function init() {
   // Populate payroll months
   populatePayrollMonths();
 
-  // Fresh starts should be empty. Do not create demo/example records automatically.
-  markAppInitialized();
-
   // Render dashboard
   navigate('dashboard');
 }
@@ -1193,5 +1188,42 @@ function init() {
 // ============================================================
 //  START
 // ============================================================
-window.addEventListener('DOMContentLoaded', showAuthGate);
+async function handleAuthState(user) {
+  if (!user) {
+    showAuthGate(pendingAuthMessage);
+    pendingAuthMessage = '';
+    return;
+  }
+  if (!isAuthorizedAccount(user)) {
+    const rejectedEmail = user.email || 'that Google account';
+    pendingAuthMessage = `${rejectedEmail} is not authorized to use this StaffHub.`;
+    await window.StaffHubAuth.signOut();
+    return;
+  }
+  currentAccount = {
+    uid: user.uid,
+    email: user.email,
+    emailVerified: user.emailVerified,
+    displayName: user.displayName,
+    photoURL: user.photoURL
+  };
+  accountStore = window.createAccountStore(
+    localStorage,
+    () => currentAccount,
+    window.STAFFHUB_ACCESS?.legacyOwnerEmail
+  );
+  renderStoragePermissionStep();
+}
+
+document.getElementById('signOutBtn').addEventListener('click', async () => {
+  document.body.classList.add('auth-locked');
+  await window.StaffHubAuth.signOut();
+});
+
+window.addEventListener('DOMContentLoaded', () => {
+  showAuthGate('Loading secure Google sign-in…');
+  window.StaffHubAuth.initialize(handleAuthState).catch(error => {
+    showAuthGate(error.message || 'Google sign-in could not be loaded.');
+  });
+});
 

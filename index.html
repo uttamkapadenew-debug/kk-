@@ -40,8 +40,9 @@
     <div class="sidebar-footer">
       <div class="sidebar-user">
         <div class="avatar-sm">A</div>
-        <span class="nav-label">Admin</span>
+        <span class="nav-label" id="accountName">Account</span>
       </div>
+      <button type="button" class="sidebar-signout" id="signOutBtn">Sign out</button>
     </div>
   </aside>
 
@@ -251,7 +252,10 @@
   <!-- Toast -->
   <div id="toastContainer" class="toast-container"></div>
 
-  <script src="attendance.js?v=20260823-permanent-dashboard-calendar"></script>
+  <script src="firebase-config.js?v=20260913-google-auth"></script>
+  <script src="account-store.js?v=20260913-google-auth"></script>
+  <script src="google-auth.js?v=20260913-google-auth"></script>
+  <script src="attendance.js?v=20260913-google-auth"></script>
 </body>
 
 </html>

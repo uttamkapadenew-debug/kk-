@@ -1,0 +1,3 @@
+.firebase/
+.playwright-cli/
+node_modules/
